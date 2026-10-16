@@ -4,6 +4,7 @@ import concurrent.futures # for pool of threads
 import time
 import sys
 import os
+import glob
 import csv
 import json
 
@@ -34,7 +35,7 @@ class ScrapeInstance:
             Scrapes all the films from the List objects using their LB link.
     """
 
-    def __init__(self, inputURLs, pages, output_name, output_path, output_file_extension, infile, concat, quiet, threads):
+    def __init__(self, inputURLs, pages, output_name, output_path, output_file_extension, infile, concat, quiet, threads, html_dir=None):
         """
         Initializes the program by running various checks if input values and syntax were correct.
 
@@ -56,6 +57,7 @@ class ScrapeInstance:
         self.infile = infile
         self.concat = concat
         self.quiet = quiet
+        self.html_dir = html_dir
 
         output_file_extension_check, self.output_file_extension = cef.checkimport_output_output_file_extension(output_file_extension)
         if not output_file_extension_check:
@@ -73,14 +75,23 @@ class ScrapeInstance:
 
         print(f"        infile:         {infilename}")
         print(f"        output_path:    {self.output_path}")
+        print(f"        html_dir:       {self.html_dir}")
         print(f"        concat:         {self.concat}")
         print(f"        threads:        {self.Nthreads}")
         print(f"        verbose:        {not self.quiet}")
         print("=============================================\n")
 
+        # Checks that the saved HTML pages exist before any scraping starts
+        if self.html_dir and not glob.glob(os.path.join(self.html_dir, "*.html")):
+            sys.exit(f"No .html files found in --html-dir '{self.html_dir}'. Please check the path and try again.")
+
         # Checks if only .txt or only command line URL were given
         if self.infile and self.inputURLs:
             sys.exit("Please provide either a .txt file with -f OR a valid list URL.")
+
+        # Saved HTML pages belong to a single list
+        if self.html_dir and (self.infile or len(self.inputURLs) != 1):
+            sys.exit("Please provide exactly one list URL on the command line when using --html-dir.")
 
         # Checks for an input file and saves any URLs to List instances
         elif self.infile:
@@ -169,7 +180,7 @@ class ScrapeInstance:
 
         for url in inputURLs:
             self.lists_to_scrape.append(List(url, self.global_page_options, self.global_output_name, self.global_output_name, self.output_file_extension, 
-                                             self.url_total, self.url_count, self.concat))
+                                             self.url_total, self.url_count, self.concat, self.html_dir))
             self.url_count += 1
 
     def concatenate_lists(self):
@@ -178,11 +189,16 @@ class ScrapeInstance:
         """
 
         self.concat_lists = []
-        for i, list in enumerate(self.lists_to_scrape):
-            if i == 0:
-                self.concat_lists.extend(list.films)
-            else:
-                self.concat_lists.extend(list.films[1:])
+        for list in self.lists_to_scrape:
+            self.concat_lists.extend(list.films)
+
+    def check_futures(self, futures):
+        """
+        Re-raises the first error from the scraping threads, which would otherwise be silently swallowed.
+        """
+
+        for future in futures:
+            future.result()
 
     def scrape_all_and_writeout(self, list_objs, max_workers=4):
         """
@@ -198,16 +214,20 @@ class ScrapeInstance:
         if self.concat == False:
 
             with concurrent.futures.ThreadPoolExecutor(max_workers) as executor:
-                _ = [executor.submit(listobj.scrape_and_write, self.output_path, self.quiet, self.concat) for listobj in list_objs]
+                futures = [executor.submit(listobj.scrape_and_write, self.output_path, self.quiet, self.concat) for listobj in list_objs]
+            self.check_futures(futures)
 
         # Waits for all lists to finish before writing out
         elif self.concat == True:
             
             with concurrent.futures.ThreadPoolExecutor(max_workers) as executor:
-                _ = [executor.submit(listobj.scrape, self.quiet, self.concat) for listobj in list_objs]
+                futures = [executor.submit(listobj.scrape, self.quiet, self.concat) for listobj in list_objs]
+            self.check_futures(futures)
 
             self.concatenate_lists()
-            
+            if len(self.concat_lists) == 0:
+                return print("        No films found to write out for the concatenated lists. Please try a different selection.")
+
             # Checks if manual name for concatenated file was given, and otherwise uses a default
             if self.global_output_name == None:
                 self.global_output_name = "concatenated_lists"

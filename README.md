@@ -9,7 +9,17 @@ Version v2.2.0 supports the scraping of:
 - **Generic Letterboxd films** (e.g. `https://letterboxd.com/films/popular/this/week/genre/documentary/`)
 - **Roles** (e.g. `https://letterboxd.com/actor/willem-dafoe/`)
 
-The current scrape rate is about 1.2 films per second. Multiple lists can be concurrently scraped using separate CPU threads (default max of 4 threads, but this is configurable).
+## Rate limiting and blocked requests
+
+To avoid being blocked by Letterboxd, requests are rate limited to one every 12 seconds across all threads. Each film takes up to 3 requests, so expect roughly 36 seconds per film (about 2.5 hours for a 250-film list). Multiple lists can be scraped concurrently using separate threads (default max of 4 threads, but this is configurable), but they share the same rate limit.
+
+If Letterboxd still responds with HTTP 429 (too many requests), all threads back off for the duration given in the `Retry-After` header (or 30, 60, 90... seconds if none is given) and the request is retried up to 5 times. Connection errors and timeouts are retried the same way.
+
+The per-film statistics (`Watches`, `List_appearances`, `Likes`, `Fans`, the rating histogram and `Total_ratings`) come from separate endpoints that Cloudflare sometimes blocks with HTTP 403. When this happens those columns are filled with the not-found value (`nan` in CSV, `null` in JSON) and the scraper stops requesting them for 5 minutes, so the remaining fields are still scraped at 1 request per film. After that the endpoints are tried again, since the block may have been temporary.
+
+If Letterboxd responds with HTTP 503 (temporarily unavailable), the request is retried with the same back-off as a 429.
+
+Films that fail to scrape for any other reason are skipped, listed at the end of the run, and the program then exits with a non-zero status so the incomplete output is not mistaken for a full one. If 5 films in a row fail (which usually means Letterboxd is blocking all requests), the run is aborted instead of paying the rate limit for every remaining film.
 
 ## Getting Started
 
@@ -35,6 +45,7 @@ If dependencies are not met it is recommended to install everything needed in on
     - `-op` or `--output-path` can be used to write the output file(s) to a desired directory.
     - `-ofe` or `--output-file-extension` can be used to specify what type of file is outputted (support for CSV and json).
     - `--concat` will concatenate all films of the given lists and output them in a single file.
+    - `--html-dir` can be used to read the list pages from a directory of `.html` files saved from your browser, instead of downloading them (useful when Letterboxd blocks the list page itself). Requires exactly one list URL on the command line; `-p` is ignored.
 
 > [!NOTE]
 > Please use `python -m listscraper --help` for a full list of all available flags including extensive descriptions on how to use them.
@@ -51,7 +62,7 @@ If dependencies are not met it is recommended to install everything needed in on
 * Add scrape functionality for user top 4 and diary.
 * Add `-u <username>` flag that scrapes the diary, top 4, films and lists of a single user.
 * Add a `--meta-data` flag to print original list name, scrape date, username above CSV header.
-* Optimize thread usage to increase scrape speed.
+* Reduce requests per film (e.g. skip the stats endpoints on request) so the rate limit costs less time per film.
 
 
 ## Authors

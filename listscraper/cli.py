@@ -45,6 +45,12 @@ def cli_arguments():
                               "The string should contain NO spaces. Also note the requirement of quotation marks when using the less-than (<) or star (*) signs!"),
                         required=False, default="*")
 
+    parser.add_argument("--html-dir", type=str,
+                        help=("read the list pages from a directory of saved .html files instead of downloading them.\n"
+                              "Useful when Letterboxd blocks the list page itself. Save each page from your browser into the directory;\n"
+                              "files are read in natural order (page1.html, page2.html, ..., page10.html). The -p flag is ignored when this is used."),
+                        required=False, default=None)
+
     parser.add_argument("--concat", action="store_true",
                         help="option to output all the scraped lists into a single concatenated file. An extra column is added that specifies the original list URL.",
                         required=False)
