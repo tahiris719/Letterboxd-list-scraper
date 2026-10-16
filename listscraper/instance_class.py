@@ -189,11 +189,8 @@ class ScrapeInstance:
         """
 
         self.concat_lists = []
-        for i, list in enumerate(self.lists_to_scrape):
-            if i == 0:
-                self.concat_lists.extend(list.films)
-            else:
-                self.concat_lists.extend(list.films[1:])
+        for list in self.lists_to_scrape:
+            self.concat_lists.extend(list.films)
 
     def check_futures(self, futures):
         """
@@ -228,7 +225,9 @@ class ScrapeInstance:
             self.check_futures(futures)
 
             self.concatenate_lists()
-            
+            if len(self.concat_lists) == 0:
+                return print("        No films found to write out for the concatenated lists. Please try a different selection.")
+
             # Checks if manual name for concatenated file was given, and otherwise uses a default
             if self.global_output_name == None:
                 self.global_output_name = "concatenated_lists"

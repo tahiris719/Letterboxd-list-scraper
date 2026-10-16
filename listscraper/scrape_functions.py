@@ -15,7 +15,9 @@ _domain = 'https://letterboxd.com/'
 _request_delay = 12.0         # seconds between requests across ALL threads; Letterboxd allows ~5 requests before a 300s block
 _request_timeout = (10, 30)   # (connect, read) seconds, so a stalled connection can't hang a thread forever
 _max_attempts = 5
-_csi_blocked = False          # set once the /csi/ stats endpoints refuse us, so we stop requesting them
+_max_consecutive_failures = 5 # abort a page after this many films in a row fail, instead of paying the rate limit for every remaining film
+_csi_retry_delay = 300.0      # seconds to stop requesting the /csi/ stats endpoints after they refuse us (Letterboxd blocks for ~300s)
+_csi_blocked_until = 0.0      # monotonic time before which the /csi/ stats endpoints are not requested
 
 _rate_lock = threading.Lock()
 _next_request_time = 0.0      # monotonic time before which no thread may send a request
@@ -62,8 +64,8 @@ def _retry_after(response, default):
 
 def _get(url):
     """
-    GET a Letterboxd URL through the shared rate limiter, backing off and retrying when rate limited (HTTP 429)
-    or when the connection fails or times out.
+    GET a Letterboxd URL through the shared rate limiter, backing off and retrying when rate limited (HTTP 429),
+    when the site is temporarily unavailable (HTTP 503), or when the connection fails or times out.
     """
 
     for attempt in range(_max_attempts):
@@ -78,15 +80,33 @@ def _get(url):
             _back_off(default_wait)
             continue
 
-        if response.status_code != 429:
+        if response.status_code not in (429, 503):
             return response
 
         # Back off all threads, but don't make this caller wait if it has no attempts left
         wait = _retry_after(response, default_wait)
         _back_off(wait)
         if attempt < _max_attempts - 1:
-            print(f"        Rate limited, waiting {wait:.0f}s...")
+            print(f"        HTTP {response.status_code}, waiting {wait:.0f}s...")
     return response
+
+def _csi_is_blocked():
+    """
+    True while the /csi/ stats endpoints should not be requested because they recently refused us.
+    """
+
+    return time.monotonic() < _csi_blocked_until
+
+def _csi_note_response(response):
+    """
+    Stops requesting the /csi/ stats endpoints for '_csi_retry_delay' seconds when one of them refuses us (HTTP 403),
+    after which they are tried again, since the block may be temporary or specific to one film.
+    """
+
+    global _csi_blocked_until
+    if response.status_code == 403:
+        _csi_blocked_until = time.monotonic() + _csi_retry_delay
+        print(f"        Stats endpoints returned HTTP 403, not requesting them for the next {_csi_retry_delay:.0f}s...")
 
 def _film_link(film_html):
     """
@@ -125,12 +145,11 @@ def scrape_list(list_url, page_options, output_file_extension, list_type, quiet=
             raise FileNotFoundError(f"No .html files found in {html_dir}")
         for html_file in html_files:
             print(f"        Reading {os.path.basename(html_file)}...")
-            with open(html_file, encoding="utf-8") as f:
-                page_result = scrape_page(list_url, list_url, output_file_extension, list_type, quiet, concat, page_html=f.read())
-            if page_result is None:
+            with open(html_file, "rb") as f:     # bytes, so BeautifulSoup detects the encoding the browser saved the page in
+                page_films, _ = scrape_page(list_url, list_url, output_file_extension, list_type, quiet, concat, page_html=f.read())
+            if not page_films:
                 print(f"        No films found in {os.path.basename(html_file)}...")
-                continue
-            list_films.extend(page_result[0])
+            list_films.extend(page_films)
 
     # If all pages should be scraped, go through all available pages
     elif (page_options == []) or (page_options == "*"):
@@ -151,10 +170,13 @@ def scrape_list(list_url, page_options, output_file_extension, list_type, quiet=
             new_link = list_url + f"page/{p}/"
             try:
                 page_films, page_soup = scrape_page(new_link, list_url, output_file_extension, list_type, quiet, concat)
-                list_films.extend(page_films)
-            except:
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code != 404:
+                    raise
+                page_films = []
+            if not page_films:
                 print(f"        No films on page {p}...")
-                continue    
+            list_films.extend(page_films)
     
     return list_films
 
@@ -170,22 +192,23 @@ def scrape_page(list_url, og_list_url, output_file_extension, list_type, quiet=F
         list_type (str):                Type of list, different specifications for different types.
         quiet (bool):                   Option to turn-off tqdm.
         concat (bool):                  Checks if concat is enabled.
-        page_html (str):                Optional saved HTML of the page, used instead of downloading 'list_url'.
+        page_html (str/bytes):          Optional saved HTML of the page, used instead of downloading 'list_url'.
 
     Returns:
-        page_films (list):      List of dicts containing information on each film on the LB page.
+        page_films (list):      List of dicts containing information on each film on the LB page (empty if the page has none).
         page_soup (str):        The HTML string of the entire LB page.
+
+    Raises:
+        requests.exceptions.HTTPError:  If the page could not be downloaded (status code is in the message).
+        RuntimeError:                   If '_max_consecutive_failures' films in a row could not be scraped.
     """
 
     page_films = []
+    consecutive_failures = 0
 
     if page_html is None:
         page_response = _get(list_url)
-
-        # Check to see page was downloaded correctly
-        if page_response.status_code != 200:
-            return print("Error: Could not load page.")
-
+        page_response.raise_for_status()
         page_html = page_response.content
 
     page_soup = BeautifulSoup(page_html, 'lxml')
@@ -196,12 +219,10 @@ def scrape_page(list_url, og_list_url, output_file_extension, list_type, quiet=F
     else:
         table = page_soup.find('ul', class_='poster-list') or page_soup.find('ul', class_='grid')
     if table is None:
-        return
-    
+        return page_films, page_soup
+
     films = table.find_all('li')
-    if films == []:
-        return 
-    
+
     not_found = np.nan if output_file_extension == ".csv" else None
     
     # Iterate through films
@@ -215,7 +236,12 @@ def scrape_page(list_url, og_list_url, output_file_extension, list_type, quiet=F
             link = _film_link(film) or "<unknown film>"
             print(f"        Skipping film {link}: {e!r}")
             skipped_films.append(link)
+            consecutive_failures += 1
+            if consecutive_failures >= _max_consecutive_failures:
+                raise RuntimeError(f"{consecutive_failures} films in a row could not be scraped (last error: {e!r}), "
+                                   f"Letterboxd is probably blocking requests") from e
             continue
+        consecutive_failures = 0
         
         # Adds an extra column with OG list URL
         if concat:
@@ -351,12 +377,11 @@ def scrape_film(film_html, not_found):
         film_dict["Studios"] = not_found
 
     # Getting number of watches, appearances in lists and number of likes (requires new link) ## 
-    global _csi_blocked
     movie = film_url.split('/')[-2]                                        # Movie title in URL
     stats_soup = BeautifulSoup('', 'lxml')
-    if not _csi_blocked:
+    if not _csi_is_blocked():
         r = _get(f'https://letterboxd.com/csi/film/{movie}/stats/')        # Stats page of said movie
-        _csi_blocked = r.status_code == 403
+        _csi_note_response(r)
         stats_soup = BeautifulSoup(r.content, 'lxml')
 
     # Stats page can be blocked (e.g. by Cloudflare) or its markup can change, in which case each missing stat is nan
@@ -374,9 +399,9 @@ def scrape_film(film_html, not_found):
     # Getting info on rating histogram (requires new link)
     hist_soup = BeautifulSoup('', 'lxml')
     hist_blocked = True
-    if not _csi_blocked:
+    if not _csi_is_blocked():
         r = _get(f'https://letterboxd.com/csi/film/{movie}/rating-histogram/')    # Rating histogram page of said movie
-        _csi_blocked = r.status_code == 403
+        _csi_note_response(r)
         hist_blocked = r.status_code != 200
         hist_soup = BeautifulSoup(r.content, 'lxml')
 

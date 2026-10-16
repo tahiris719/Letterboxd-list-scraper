@@ -15,9 +15,11 @@ To avoid being blocked by Letterboxd, requests are rate limited to one every 12 
 
 If Letterboxd still responds with HTTP 429 (too many requests), all threads back off for the duration given in the `Retry-After` header (or 30, 60, 90... seconds if none is given) and the request is retried up to 5 times. Connection errors and timeouts are retried the same way.
 
-The per-film statistics (`Watches`, `List_appearances`, `Likes`, `Fans`, the rating histogram and `Total_ratings`) come from separate endpoints that Cloudflare sometimes blocks with HTTP 403. When this happens those columns are filled with the not-found value (`nan` in CSV, `null` in JSON) and the scraper stops requesting them for the rest of the run, so the remaining fields are still scraped at 1 request per film.
+The per-film statistics (`Watches`, `List_appearances`, `Likes`, `Fans`, the rating histogram and `Total_ratings`) come from separate endpoints that Cloudflare sometimes blocks with HTTP 403. When this happens those columns are filled with the not-found value (`nan` in CSV, `null` in JSON) and the scraper stops requesting them for 5 minutes, so the remaining fields are still scraped at 1 request per film. After that the endpoints are tried again, since the block may have been temporary.
 
-Films that fail to scrape for any other reason are skipped, listed at the end of the run, and the program then exits with a non-zero status so the incomplete output is not mistaken for a full one.
+If Letterboxd responds with HTTP 503 (temporarily unavailable), the request is retried with the same back-off as a 429.
+
+Films that fail to scrape for any other reason are skipped, listed at the end of the run, and the program then exits with a non-zero status so the incomplete output is not mistaken for a full one. If 5 films in a row fail (which usually means Letterboxd is blocking all requests), the run is aborted instead of paying the rate limit for every remaining film.
 
 ## Getting Started
 
