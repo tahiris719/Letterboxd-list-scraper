@@ -9,7 +9,15 @@ Version v2.2.0 supports the scraping of:
 - **Generic Letterboxd films** (e.g. `https://letterboxd.com/films/popular/this/week/genre/documentary/`)
 - **Roles** (e.g. `https://letterboxd.com/actor/willem-dafoe/`)
 
-To avoid being blocked by Letterboxd, requests are rate limited to one every 12 seconds across all threads. Each film takes up to 3 requests, so expect roughly 36 seconds per film (about 2.5 hours for a 250-film list). Multiple lists can be scraped concurrently using separate threads (default max of 4 threads, but this is configurable), but they share the same rate limit. Films that fail to scrape are listed at the end of the run, and the program then exits with a non-zero status.
+## Rate limiting and blocked requests
+
+To avoid being blocked by Letterboxd, requests are rate limited to one every 12 seconds across all threads. Each film takes up to 3 requests, so expect roughly 36 seconds per film (about 2.5 hours for a 250-film list). Multiple lists can be scraped concurrently using separate threads (default max of 4 threads, but this is configurable), but they share the same rate limit.
+
+If Letterboxd still responds with HTTP 429 (too many requests), all threads back off for the duration given in the `Retry-After` header (or 30, 60, 90... seconds if none is given) and the request is retried up to 5 times. Connection errors and timeouts are retried the same way.
+
+The per-film statistics (`Watches`, `List_appearances`, `Likes`, `Fans`, the rating histogram and `Total_ratings`) come from separate endpoints that Cloudflare sometimes blocks with HTTP 403. When this happens those columns are filled with the not-found value (`nan` in CSV, `null` in JSON) and the scraper stops requesting them for the rest of the run, so the remaining fields are still scraped at 1 request per film.
+
+Films that fail to scrape for any other reason are skipped, listed at the end of the run, and the program then exits with a non-zero status so the incomplete output is not mistaken for a full one.
 
 ## Getting Started
 
