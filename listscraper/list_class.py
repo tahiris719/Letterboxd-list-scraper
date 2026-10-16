@@ -24,7 +24,7 @@ class List:
         scrape_and_write():     Wrapper function to both scrape and write out to file.
     """
     
-    def __init__(self, list_url, pagestring, output_name, global_output_name, output_file_extension, url_total, url_count, concat):
+    def __init__(self, list_url, pagestring, output_name, global_output_name, output_file_extension, url_total, url_count, concat, html_dir=None):
         """
         Constructs necessary attributes of the list object.
 
@@ -39,9 +39,11 @@ class List:
             output_name (str):              The final output name of the file.
             output_file_extension (str):    Type of output file.
             page_options (list):            List of integers corresponding to all selected pages.
+            html_dir (str):                 Optional directory of saved list page .html files.
         """
         
         self.url = list_url
+        self.html_dir = html_dir
         self.pagestring = pagestring.strip("\'\"").replace(" ", "")
         self.output_file_extension = output_file_extension
 
@@ -86,7 +88,7 @@ class List:
         else:
             scrape_url = self.url
 
-        self.films = scrape_list(scrape_url, self.page_options, self.output_file_extension, self.type, quiet, concat)
+        self.films = scrape_list(scrape_url, self.page_options, self.output_file_extension, self.type, quiet, concat, self.html_dir)
 
     def write_to_file(self, output_path):
         """
