@@ -60,7 +60,7 @@ If dependencies are not met it is recommended to install everything needed in on
 * Add scrape functionality for user top 4 and diary.
 * Add `-u <username>` flag that scrapes the diary, top 4, films and lists of a single user.
 * Add a `--meta-data` flag to print original list name, scrape date, username above CSV header.
-* Optimize thread usage to increase scrape speed.
+* Reduce requests per film (e.g. skip the stats endpoints on request) so the rate limit costs less time per film.
 
 
 ## Authors
